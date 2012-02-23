@@ -15,6 +15,7 @@ function Connection(ip){
 			serverID = (d+"").substr(0,d.length-2);
 			self.write(clientID+"\r\n");
 			self.on("data",function(d){
+				console.log(d+"");
 				var b = new Buffer(buffer.length+d.length);
 				buffer.copy(b);
 				d.copy(b,buffer.length);
@@ -27,27 +28,45 @@ function Connection(ip){
 					);
 					if(buffer.length >= packageInfo.packetLength+4){
 						self.emit("packet",read(buffer,5,
-							"byte["+(packageInfo.packetLength-packageInfo.paddingLength-1)+"]","payload",
+							"byte["+(packageInfo.packetLength-packageInfo.paddingLength-1)+"]","payload"/*,
 							"byte["+packageInfo.paddingLength+"]","padding",
-							"byte[0]","mac"
-						));						
+							"byte[0]","mac"*/
+						));
+						
+						buffer = buffer.slice(4+packageInfo.length);
 					}
 				}
 			});
+			
+			
+			
+			
+			
+			
 		});	
 		
 		self.on("packet",function(p){
 			var command = p.payload[0];
-			console.log("got command "+command+" length: "+p.payload.length);
 			switch(command){
+				case 1:
+					disconnect(p);
+					break;
 				case 20:
 					keyExchange(p);	
 					break;
 			}
 		});
 		
+		function disconnect(p){
+			var d = read(p.payload,1,
+				"uint32","code",
+				"string","description",
+				"string","language"
+			);
+			self.emit("disconnect",d);
+		}
+		
 		function keyExchange(p){
-			console.log("reading...");
 			var d = read(p.payload,1,
 				"byte[16]","cookie",
 				"name-list","kexAlgorithms",
@@ -62,12 +81,12 @@ function Connection(ip){
 				"name-list","languagesServer",
 				"boolean","firstKexPacketFollows",
 				"uint32","reserved"				
-			);		
+			);
 			
 			sendPackage({
 				payload:pack(
 					"byte",20,
-					"byte[]",d.cookie,
+					"byte[]",new Buffer(16),
 					"name-list",["diffie-hellman-group1-sha1","diffie-hellman-group14-sha1"],
 					"name-list",["ssh-dss"],
 					"name-list",["3des-cbc"],
@@ -78,31 +97,57 @@ function Connection(ip){
 					"name-list",["none"],
 					"name-list",[],
 					"name-list",[],
-					"boolean",false,
+					"boolean",true,
 					"uint32",0
 				),
-				padding:new Buffer(0),
+				padding:new Buffer(10),
 				mac:new Buffer(0)
 			});
 			
+					
+			
+			self.write(new Buffer([0,0,0,12,6,30,0,0,16,0,0,0,0,0,0,0]));
+			
 			/*
+			console.log("sent");
+			
+			var p = 23;
+			var g = 5;
+			var x = 6;
+			var e = Math.pow(g,x)%p;
+			
+			console.log(e);
+			
+			
+			
 			sendPackage({
 				payload:pack(
 					"byte",30,
-					"mpint",
+					"mpint",e
+				)
 			});*/
 			
 		}	
 		
 		function sendPackage(p){
 		
+		
+			var l = 5+p.payload.length;
+			while(l < 16 || l%8 != 0){
+				l++;
+			}
+			var padding = new Buffer(l-p.payload.length-5);
+
+		
 			var pkg = pack(
-				"uint32",p.payload.length+p.padding.length+p.mac.length+1,
-				"byte",p.padding.length,
+				"uint32",l-4,
+				"byte",padding.length,
 				"byte[]",p.payload,
-				"byte[]",p.padding,
-				"byte[]",p.mac
+				"byte[]",padding
 			);
+			
+			console.log("packet lengt: "+pkg.length);
+			console.log("packet: ",pkg);
 			require("fs").writeFileSync("c:/out.txt",pkg);
 			self.write(pkg);
 		}
@@ -155,7 +200,19 @@ function pack(){
 				buffers.push(value);
 				break;
 			case "mpint":
-				//needs to be implemented in future
+				var length = 1;
+				while(value > Math.pow(256,length++));
+				length--;				
+				buffers.push(new Buffer([0,0,0,1]));
+				var buffer = new Buffer(length);
+				console.log("val:"+value);
+				for(var i = buffer.length-1; i >= 0; i--){
+					buffer[i] = value%256;
+					console.log("buf:"+buffer[i]);
+					value -= buffer[i];
+					value /= 256;
+				}
+				buffers.push(buffer);				
 				break;				
 		}
 	}
