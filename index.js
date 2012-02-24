@@ -1,4 +1,6 @@
 var net = require("net");
+var crypto = require("crypto");
+var assert = require("assert");
 
 module.exports.connect = function(ip){
 	return new Connection(ip);
@@ -14,8 +16,8 @@ function Connection(ip){
 		self.once("data",function(d){
 			serverID = (d+"").substr(0,d.length-2);
 			self.write(clientID+"\r\n");
+			
 			self.on("data",function(d){
-				console.log(d+"");
 				var b = new Buffer(buffer.length+d.length);
 				buffer.copy(b);
 				d.copy(b,buffer.length);
@@ -27,26 +29,17 @@ function Connection(ip){
 						"byte","paddingLength"
 					);
 					if(buffer.length >= packageInfo.packetLength+4){
-						self.emit("packet",read(buffer,5,
-							"byte["+(packageInfo.packetLength-packageInfo.paddingLength-1)+"]","payload"/*,
-							"byte["+packageInfo.paddingLength+"]","padding",
-							"byte[0]","mac"*/
-						));
-						
+						self.emit("packet",buffer.slice(5,4+packageInfo.packetLength-packageInfo.paddingLength));						
 						buffer = buffer.slice(4+packageInfo.length);
 					}
 				}
 			});
 			
-			
-			
-			
-			
-			
+					
 		});	
 		
 		self.on("packet",function(p){
-			var command = p.payload[0];
+			var command = p[0];
 			switch(command){
 				case 1:
 					disconnect(p);
@@ -54,11 +47,14 @@ function Connection(ip){
 				case 20:
 					keyExchange(p);	
 					break;
+				case 31:
+					continueKeyExchange(p);
+					
 			}
 		});
 		
 		function disconnect(p){
-			var d = read(p.payload,1,
+			var d = read(p,1,
 				"uint32","code",
 				"string","description",
 				"string","language"
@@ -66,8 +62,8 @@ function Connection(ip){
 			self.emit("disconnect",d);
 		}
 		
-		function keyExchange(p){
-			var d = read(p.payload,1,
+		function keyExchange(p){		
+			var d = read(p,1,
 				"byte[16]","cookie",
 				"name-list","kexAlgorithms",
 				"name-list","serverHostKeyAlgorithms",
@@ -83,71 +79,62 @@ function Connection(ip){
 				"uint32","reserved"				
 			);
 			
-			sendPackage({
-				payload:pack(
-					"byte",20,
-					"byte[]",new Buffer(16),
-					"name-list",["diffie-hellman-group1-sha1","diffie-hellman-group14-sha1"],
-					"name-list",["ssh-dss"],
-					"name-list",["3des-cbc"],
-					"name-list",["3des-cbc"],
-					"name-list",["hmac-sha1"],
-					"name-list",["hmac-sha1"],
-					"name-list",["none"],
-					"name-list",["none"],
-					"name-list",[],
-					"name-list",[],
-					"boolean",true,
-					"uint32",0
-				),
-				padding:new Buffer(10),
-				mac:new Buffer(0)
-			});
-			
-					
-			
-			self.write(new Buffer([0,0,0,12,6,30,0,0,16,0,0,0,0,0,0,0]));
-			
-			/*
-			console.log("sent");
-			
-			var p = 23;
-			var g = 5;
-			var x = 6;
-			var e = Math.pow(g,x)%p;
-			
-			console.log(e);
+			sendPackage(pack(
+				"byte",20,
+				"byte[]",new Buffer(16),
+				"name-list",["diffie-hellman-group1-sha1","diffie-hellman-group14-sha1"],
+				"name-list",["ssh-dss"],
+				"name-list",["3des-cbc"],
+				"name-list",["3des-cbc"],
+				"name-list",["hmac-sha1"],
+				"name-list",["hmac-sha1"],
+				"name-list",["none"],
+				"name-list",["none"],
+				"name-list",[],
+				"name-list",[],
+				"boolean",false,
+				"uint32",0
+			));	
 			
 			
+                                             
+
+            var hellman = crypto.createDiffieHellman('ANz5OguIOXLsDhmYmsWizjEOHTdxfo2Vcbt2I3MYZuYe91ouJ4mLBX+YkcLiemOcPym2CBRYHNOyyjmG0mg3BVd9RcLn5S3IHHoXGHblzqdLFEi/368Ygo79JRnxTkXjgmY0rxlJ5bU1zIKaSDuKdiI+XUkKJX8Fvf8W8vsixYOr',"base64");
+			hellman.setPrivateKey(crypto.randomBytes(20));
+			hellman.generateKeys();
 			
-			sendPackage({
-				payload:pack(
-					"byte",30,
-					"mpint",e
-				)
-			});*/
+			var e = hellman.getPublicKey();
+			var x = hellman.getPrivateKey();		
 			
-		}	
+			sendPackage(pack(
+				"byte",30,
+				"mpint",new Buffer(e,"binary")
+			));
+		}
+
+		function continueKeyExchange(p){
+			var d = read(p,1,
+				"string","K_S",
+				"mpint","f",
+				"string","SigH"
+			);
+		}
 		
-		function sendPackage(p){
+		function sendPackage(p){	
 		
-		
-			var l = 5+p.payload.length;
+			var l = 5+p.length;
 			while(l < 16 || l%8 != 0){
 				l++;
 			}
-			var padding = new Buffer(l-p.payload.length-5);
-
+			var padding = new Buffer(l-p.length-5);
 		
 			var pkg = pack(
 				"uint32",l-4,
 				"byte",padding.length,
-				"byte[]",p.payload,
+				"byte[]",p,
 				"byte[]",padding
-			);
-			
-			console.log("packet lengt: "+pkg.length);
-			console.log("packet: ",pkg);
+			);			
+
 			require("fs").writeFileSync("c:/out.txt",pkg);
 			self.write(pkg);
 		}
@@ -189,30 +176,17 @@ function pack(){
 				break;
 			case "string":
 			case "name-list":
+			case "mpint":
 				if(type == "name-list"){
-					value = value.join(",");
+					value = new Buffer(value.join(","),"binary");
+				}else if(type == "string"){
+					value = new Buffer(value,"binary");
 				}
-				value = new Buffer(value,"binary");
 				buffers.push(pack("uint32",value.length));
 				buffers.push(value);
 				break;
 			case "byte[]":
 				buffers.push(value);
-				break;
-			case "mpint":
-				var length = 1;
-				while(value > Math.pow(256,length++));
-				length--;				
-				buffers.push(new Buffer([0,0,0,1]));
-				var buffer = new Buffer(length);
-				console.log("val:"+value);
-				for(var i = buffer.length-1; i >= 0; i--){
-					buffer[i] = value%256;
-					console.log("buf:"+buffer[i]);
-					value -= buffer[i];
-					value /= 256;
-				}
-				buffers.push(buffer);				
 				break;				
 		}
 	}
@@ -234,6 +208,8 @@ function read(b, index){
 	var result;
 	for(var i = 2; i < arguments.length; i+=2){
 		var type = arguments[i];
+		var name = arguments[i+1];
+
 		switch(type){
 			case "byte":
 				result = b[index++];
@@ -251,29 +227,18 @@ function read(b, index){
 				break;
 			case "string":
 			case "name-list":
+			case "mpint":
 				var s = "";
-				var buffer = new Buffer(b.readUInt32BE(index));
-				index += 4;
-				b.copy(buffer,0,index,index+buffer.length);
-				index += buffer.length;
-				result = buffer+"";
+				var buffer = b.slice(index+4,index+4+b.readUInt32BE(index));
+				index += 4+buffer.length;
 				
 				if(type == "name-list"){
-					result = result.split(",");
+					result = buffer.toString("binary").split(",");
+				}else if(type == "mpint"){
+					result = buffer;
+				}else{
+					result = buffer.toString("binary");
 				}
-				break;
-			case "mpint":			
-				var length = (b[index]*256*256+b[index+1]*256+b[index+2])/8;
-				var val = 0;
-				for(var j = 0; j < length; j++){
-					val += b[index+3+j]*Math.pow(256,length-j-1);					
-				}
-				var h = Math.pow(256,length)/2;
-				if(val > h){
-					val = -(val-h);
-				}					
-				result = val;
-				index += 3+length;			
 				break;
 			default:
 				if(type.indexOf("byte[") == 0){
@@ -284,7 +249,7 @@ function read(b, index){
 				}
 				break;
 		}
-		results[arguments[i+1]] = result;
+		results[name] = result;
 	}
 	return results;
 }
