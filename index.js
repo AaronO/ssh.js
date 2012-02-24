@@ -9,15 +9,47 @@ module.exports.connect = function(ip){
 function Connection(ip){
 	var buffer = new Buffer(0);
 	
-	var clientID = "SSH-2.0-PuTTY_Release_0.61";
-	var serverID = "";
+	//information about server & client
+	var clientVersion = "2.0";
+	var clientName = "ssh.js";
+	var clientComment = "";	
+	var serverVersion;
+	var serverName;
+	var serverComment;
+	
+	//information for key exchange & encryption
+	var serverIdentification;	//V_S
+	var clientIdentification;	//V_C
+	var serverKexinitMessage;	//I_S
+	var clientKexinitMessage;	//I_C
+	var publicHostKey;			//K_S
+	var sharedSecret;			//K
+	var exchangeHash;			//H
+	var sessionIdentifier;
+	var key = new Buffer("A");
+
+	
+	//the diffie hellman object used to generate the keys
 	var hellman;
+	
+	var encrypted = false;
 	
 	var self = net.connect(22,ip,function(){
 		self.once("data",function(d){
-			serverID = (d+"").substr(0,d.length-2);
-			self.write(clientID+"\r\n");
 			
+			//get server information
+			serverIdentification = d.slice(0,d.length-2);			
+			var si = serverIdentification.toString("binary").substr(4);
+			serverVersion = si.substr(0,si.indexOf("-"));
+			si = si.substr(si.indexOf("-")+1).split(" ");
+			serverName = si[0];
+			serverComment = si.slice(1).join(" ");
+			
+			//send client information
+			clientIdentification = new Buffer("SSH-"+clientVersion+"-"+clientName+(clientComment.length?(" "+clientComment):""),"binary");
+			self.write(clientIdentification.toString("binary")+"\r\n");
+			
+			//start packet reading			
 			self.on("data",function(d){
 				var b = new Buffer(buffer.length+d.length);
 				buffer.copy(b);
@@ -45,11 +77,15 @@ function Connection(ip){
 				case 1:
 					disconnect(p);
 					break;
+				case 21:
+					changeKey();
+					break;
 				case 20:
 					keyExchange(p);	
 					break;
 				case 31:
 					continueKeyExchange(p);
+					break;
 					
 			}
 		});
@@ -63,8 +99,8 @@ function Connection(ip){
 			self.emit("disconnect",d);
 		}
 		
-		function keyExchange(p){		
-			var d = read(p,1,
+		function keyExchange(p){
+			var d = read(serverKexinitMessage = p,1,
 				"byte[16]","cookie",
 				"name-list","kexAlgorithms",
 				"name-list","serverHostKeyAlgorithms",
@@ -80,7 +116,7 @@ function Connection(ip){
 				"uint32","reserved"				
 			);
 			
-			sendPackage(pack(
+			sendPackage(clientKexinitMessage = pack(
 				"byte",20,
 				"byte[]",new Buffer(16),
 				"name-list",["diffie-hellman-group1-sha1","diffie-hellman-group14-sha1"],
@@ -111,13 +147,43 @@ function Connection(ip){
 				"string","K_S",
 				"mpint","f",
 				"string","SigH"
+			);			
+			
+			exchangeHash = pack(
+				"string",clientIdentification.toString("binary"),
+				"string",serverIdentification.toString("binary"),
+				"string",clientKexinitMessage.toString("binary"),
+				"string",serverKexinitMessage.toString("binary"),
+				"string",(publicHostKey = d.K_S).toString("binary"),
+				"mpint",new Buffer(hellman.getPublicKey(),"binary"),
+				"mpint",d.f,
+				"mpint",(sharedSecret = new Buffer(hellman.computeSecret(d.f.toString("binary")),"binary"))
 			);
 			
-			var secret = new Buffer(hellman.computeSecret(d.f.toString("binary")),"binary");
-			var hash = d.SigH;
+			var hash = crypto.createHash("sha1");
+			hash.update(exchangeHash.toString("binary"));
+			exchangeHash = new Buffer(hash.digest(),"binary");
 			
-			console.log(secret,hash);
+			if(!sessionIdentifier){
+				sessionIdentifier = exchangeHash;
+			}
 			
+			sendPackage(pack(
+				"byte",21
+			));
+			encrypted = true;
+		}
+		
+		function changeKey(){
+			key = pack(
+				"byte[]",sharedSecret,
+				"byte[]",exchangeHash,
+				"byte[]",key,
+				"byte[]",sessionIdentifier
+			);
+			var hash = crypto.createHash("sha1");
+			hash.update(key.toString("binary"));
+			key = new Buffer(key.digest(),"binary");
 		}
 		
 		function sendPackage(p){	
