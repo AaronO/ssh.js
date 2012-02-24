@@ -11,6 +11,7 @@ function Connection(ip){
 	
 	var clientID = "SSH-2.0-PuTTY_Release_0.61";
 	var serverID = "";
+	var hellman;
 	
 	var self = net.connect(22,ip,function(){
 		self.once("data",function(d){
@@ -95,20 +96,13 @@ function Connection(ip){
 				"boolean",false,
 				"uint32",0
 			));	
-			
-			
-                                             
 
-            var hellman = crypto.createDiffieHellman('ANz5OguIOXLsDhmYmsWizjEOHTdxfo2Vcbt2I3MYZuYe91ouJ4mLBX+YkcLiemOcPym2CBRYHNOyyjmG0mg3BVd9RcLn5S3IHHoXGHblzqdLFEi/368Ygo79JRnxTkXjgmY0rxlJ5bU1zIKaSDuKdiI+XUkKJX8Fvf8W8vsixYOr',"base64");
-			hellman.setPrivateKey(crypto.randomBytes(20));
-			hellman.generateKeys();
-			
-			var e = hellman.getPublicKey();
-			var x = hellman.getPrivateKey();		
+			hellman = crypto.getDiffieHellman("modp2");
+			hellman.generateKeys();		
 			
 			sendPackage(pack(
 				"byte",30,
-				"mpint",new Buffer(e,"binary")
+				"mpint",new Buffer(hellman.getPublicKey(),"binary")
 			));
 		}
 
@@ -118,6 +112,12 @@ function Connection(ip){
 				"mpint","f",
 				"string","SigH"
 			);
+			
+			var secret = new Buffer(hellman.computeSecret(d.f.toString("binary")),"binary");
+			var hash = d.SigH;
+			
+			console.log(secret,hash);
+			
 		}
 		
 		function sendPackage(p){	
